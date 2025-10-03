@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  sstp-vpn:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: sstp-vpn-server
+    restart: unless-stopped
+    ports:
+      - "443:443"
+    environment:
+      - VPN_USER=${VPN_USER:-vpnuser}
+      - VPN_PASS=${VPN_PASS:-vpnpass}
+      - VPS_PUBLIC_IP=${VPS_PUBLIC_IP:-}
+      - VPN_SUBNET=${VPN_SUBNET:-10.10.10.0/24}
+      - DNS1=${DNS1:-1.1.1.1}
+      - DNS2=${DNS2:-8.8.8.8}
+    volumes:
+      - sstp_certs:/etc/ssl
+      - sstp_logs:/var/log
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.ip_forward=1
+    networks:
+      - sstp_network
+    healthcheck:
+      test: ["CMD", "netstat", "-tlnp", "|", "grep", ":443"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Optional: Add a management container
+  sstp-manager:
+    image: alpine:latest
+    container_name: sstp-manager
+    restart: "no"
+    depends_on:
+      - sstp-vpn
+    volumes:
+      - sstp_certs:/etc/ssl:ro
+      - sstp_logs:/var/log:ro
+    networks:
+      - sstp_network
+    command: >
+      sh -c "
+        apk add --no-cache curl jq &&
+        echo 'SSTP VPN Manager' &&
+        echo '================' &&
+        echo 'Container Status:' &&
+        docker ps --filter name=sstp-vpn-server --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' &&
+        echo &&
+        echo 'Certificate Info:' &&
+        openssl x509 -in /etc/ssl/certs/sstp.crt -text -noout | grep -E '(Subject:|Not Before|Not After)' &&
+        echo &&
+        echo 'Recent Logs:' &&
+        tail -n 20 /var/log/accel-ppp.log 2>/dev/null || echo 'No logs available yet'
+      "
+
+volumes:
+  sstp_certs:
+    driver: local
+  sstp_logs:
+    driver: local
+
+networks:
+  sstp_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
